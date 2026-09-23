@@ -1,0 +1,1 @@
+"""Exoplanet Hunter backend application."""
