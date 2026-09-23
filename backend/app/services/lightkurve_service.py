@@ -9,6 +9,7 @@ SearchRecord: TypeAlias = dict[str, SearchValue]
 WASP_18_DOWNLOAD_SEQUENCE_NUMBER = 2
 WASP_18_DOWNLOAD_EXPTIME = 120.0
 PDCSAP_FLUX_COLUMN = "pdcsap_flux"
+DEFAULT_QUALITY_BITMASK = "default"
 
 # Lightkurve exposes the TESS sector number as sequence_number.
 _SEARCH_FIELDS = (
@@ -36,6 +37,17 @@ class DownloadedLightCurve:
     flux: object
     flux_err: object | None
     quality: object | None
+    quality_bitmask: str
+    light_curve: object
+
+
+@dataclass(frozen=True)
+class CleanedLightCurve(DownloadedLightCurve):
+    preprocessing: dict[str, str | bool]
+    points_before: int
+    points_after_quality: int
+    points_after: int
+    points_removed: int
 
 
 def search_wasp_18() -> list[SearchRecord]:
@@ -48,6 +60,7 @@ def search_wasp_18_spoc() -> list[SearchRecord]:
 
 def download_wasp_18_spoc_lightcurve(
     download_dir: str | None = None,
+    quality_bitmask: str = "none",
 ) -> DownloadedLightCurve:
     search_result = _query_wasp_18(
         author="SPOC",
@@ -65,7 +78,7 @@ def download_wasp_18_spoc_lightcurve(
     try:
         light_curve = search_result[selected_index : selected_index + 1].download(
             download_dir=download_dir,
-            quality_bitmask="none",
+            quality_bitmask=quality_bitmask,
             flux_column=PDCSAP_FLUX_COLUMN,
         )
     except Exception as exc:
@@ -102,6 +115,58 @@ def download_wasp_18_spoc_lightcurve(
         flux=light_curve.flux,
         flux_err=_optional_column(light_curve, "flux_err"),
         quality=_optional_column(light_curve, "quality"),
+        quality_bitmask=quality_bitmask,
+        light_curve=light_curve,
+    )
+
+
+def clean_wasp_18_spoc_light_curve(
+    download_dir: str | None = None,
+) -> CleanedLightCurve:
+    downloaded = download_wasp_18_spoc_lightcurve(
+        download_dir=download_dir,
+        quality_bitmask=DEFAULT_QUALITY_BITMASK,
+    )
+    if downloaded.light_curve is None or len(downloaded.light_curve) == 0:
+        raise LightkurveSearchError("Cannot clean an empty WASP-18 light curve")
+
+    points_before = _point_count_before_quality(downloaded.light_curve)
+    points_after_quality = len(downloaded.light_curve)
+
+    try:
+        cleaned_light_curve = downloaded.light_curve.remove_nans()
+    except Exception as exc:
+        raise LightkurveSearchError(
+            "Failed to remove NaN values from the WASP-18 light curve"
+        ) from exc
+
+    if cleaned_light_curve is None or len(cleaned_light_curve) == 0:
+        raise LightkurveSearchError("WASP-18 light curve is empty after NaN removal")
+
+    points_after = len(cleaned_light_curve)
+    preprocessing = {
+        "flux_source": "PDCSAP",
+        "quality_bitmask": DEFAULT_QUALITY_BITMASK,
+        "remove_nans": True,
+    }
+    return CleanedLightCurve(
+        target_name=downloaded.target_name,
+        mission=downloaded.mission,
+        author=downloaded.author,
+        sequence_number=downloaded.sequence_number,
+        exptime=downloaded.exptime,
+        flux_source=downloaded.flux_source,
+        time=cleaned_light_curve.time,
+        flux=cleaned_light_curve.flux,
+        flux_err=_optional_column(cleaned_light_curve, "flux_err"),
+        quality=_optional_column(cleaned_light_curve, "quality"),
+        quality_bitmask=DEFAULT_QUALITY_BITMASK,
+        light_curve=cleaned_light_curve,
+        preprocessing=preprocessing,
+        points_before=points_before,
+        points_after_quality=points_after_quality,
+        points_after=points_after,
+        points_removed=points_before - points_after,
     )
 
 
@@ -174,6 +239,13 @@ def _optional_column(light_curve: object, column_name: str) -> object | None:
     if column_name not in light_curve.colnames:
         return None
     return light_curve[column_name]
+
+
+def _point_count_before_quality(light_curve: object) -> int:
+    quality_mask = light_curve.meta.get("QUALITY_MASK")
+    if quality_mask is None:
+        return len(light_curve)
+    return len(quality_mask)
 
 
 def _to_python_value(value: object) -> SearchValue:

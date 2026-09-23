@@ -1,10 +1,14 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from lightkurve import LightCurve
 
 from app.services.lightkurve_service import (
+    DEFAULT_QUALITY_BITMASK,
     PDCSAP_FLUX_COLUMN,
+    DownloadedLightCurve,
     LightkurveSearchError,
+    clean_wasp_18_spoc_light_curve,
     download_wasp_18_spoc_lightcurve,
     search_wasp_18,
     search_wasp_18_spoc,
@@ -278,6 +282,80 @@ def test_download_wasp_18_spoc_rejects_empty_download(
 
     with pytest.raises(LightkurveSearchError, match="light curve is empty"):
         download_wasp_18_spoc_lightcurve()
+
+
+@patch("app.services.lightkurve_service.download_wasp_18_spoc_lightcurve")
+def test_clean_wasp_18_spoc_applies_default_quality_and_removes_nans(
+    download_light_curve: MagicMock,
+) -> None:
+    light_curve = LightCurve(
+        time=[1.0, 2.0, 3.0],
+        flux=[100.0, float("nan"), 102.0],
+        flux_err=[0.1, 0.1, 0.1],
+        quality=[0, 0, 0],
+    )
+    light_curve.meta["QUALITY_MASK"] = [True, False, True, True]
+    download_light_curve.return_value = DownloadedLightCurve(
+        target_name="100100827",
+        mission="TESS Sector 02",
+        author="SPOC",
+        sequence_number=2,
+        exptime=120.0,
+        flux_source="PDCSAP",
+        time=light_curve.time,
+        flux=light_curve.flux,
+        flux_err=light_curve.flux_err,
+        quality=light_curve.quality,
+        quality_bitmask=DEFAULT_QUALITY_BITMASK,
+        light_curve=light_curve,
+    )
+
+    result = clean_wasp_18_spoc_light_curve(download_dir="/tmp/lightkurve-test")
+
+    download_light_curve.assert_called_once_with(
+        download_dir="/tmp/lightkurve-test",
+        quality_bitmask=DEFAULT_QUALITY_BITMASK,
+    )
+    assert len(result.time) == 2
+    assert all(value == value for value in result.flux.value)
+    assert result.preprocessing == {
+        "flux_source": "PDCSAP",
+        "quality_bitmask": "default",
+        "remove_nans": True,
+    }
+    assert result.points_before == 4
+    assert result.points_after_quality == 3
+    assert result.points_after == 2
+    assert result.points_removed == 2
+    assert result.target_name == "100100827"
+    assert result.mission == "TESS Sector 02"
+    assert result.author == "SPOC"
+    assert result.sequence_number == 2
+    assert result.exptime == 120.0
+
+
+@patch("app.services.lightkurve_service.download_wasp_18_spoc_lightcurve")
+def test_clean_wasp_18_spoc_rejects_empty_input(
+    download_light_curve: MagicMock,
+) -> None:
+    light_curve = LightCurve(time=[], flux=[])
+    download_light_curve.return_value = DownloadedLightCurve(
+        target_name="100100827",
+        mission="TESS Sector 02",
+        author="SPOC",
+        sequence_number=2,
+        exptime=120.0,
+        flux_source="PDCSAP",
+        time=light_curve.time,
+        flux=light_curve.flux,
+        flux_err=light_curve.flux_err,
+        quality=None,
+        quality_bitmask=DEFAULT_QUALITY_BITMASK,
+        light_curve=light_curve,
+    )
+
+    with pytest.raises(LightkurveSearchError, match="Cannot clean an empty"):
+        clean_wasp_18_spoc_light_curve()
 
 
 def _mock_search_result(rows: list[dict[str, object]]) -> MagicMock:
