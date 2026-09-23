@@ -34,3 +34,12 @@ uvicorn app.main:app --reload
 ```
 
 The API will be available at <http://127.0.0.1:8000>.
+
+## Run the tests
+
+From the `backend` directory:
+
+```bash
+python -m pip install -e ".[test]"
+pytest
+```
